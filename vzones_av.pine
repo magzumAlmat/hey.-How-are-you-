@@ -1,0 +1,308 @@
+// ============================================================
+// V-Zones XAUUSD — Supply & Demand + Точки A/V + Сигналы входа
+// + Webhook-сообщения для Telegram
+// Pine Script v6 | TradingView
+// ============================================================
+// Настройка отправки в Telegram:
+//   1. Добавь индикатор на график
+//   2. Создай Alert → Condition: "V-Zones A/V" → любое условие
+//   3. В поле "Webhook URL" вставь URL твоего сервера
+//   4. В поле "Message" поставь: {{strategy.order.alert_message}}
+//      или оставь пустым — alert() уже содержит текст
+// ============================================================
+
+//@version=6
+indicator("V-Zones: Supply & Demand [A/V Method]",
+     shorttitle = "V-Zones A/V",
+     overlay    = true,
+     max_boxes_count  = 50,
+     max_labels_count = 100,
+     max_lines_count  = 50)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+grp_zone = "Настройки зон"
+swing_len   = input.int (6,   "Сила свинга (бар слева/справа)", minval=2, maxval=20, group=grp_zone,
+     tooltip="Сколько свечей слева и справа подтверждают пик/дно. Больше = реже, но надёжнее.")
+atr_mult    = input.float(1.0, "Ширина зоны (множитель ATR)",   minval=0.1, maxval=5.0, step=0.1, group=grp_zone,
+     tooltip="Зона = от пика/дна ± ATR*multiplier. Увеличь для волатильных рынков.")
+max_zones   = input.int (5,   "Макс. активных зон",            minval=1,  maxval=10,  group=grp_zone)
+show_broken = input.bool(false,"Показывать пробитые зоны",                             group=grp_zone)
+
+grp_av = "Точки A и V"
+show_A      = input.bool(true, "Показывать точку A (пик у зоны)",   group=grp_av)
+show_V      = input.bool(true, "Показывать точку V (дно отскока)",   group=grp_av)
+v_confirm_bars = input.int(2,  "Свечей подтверждения точки V",  minval=1, maxval=5, group=grp_av,
+     tooltip="Сколько свечей роста после дна нужно для подтверждения точки V (входа).")
+
+grp_entry = "Сигналы входа"
+show_entry  = input.bool(true, "Показывать сигнал входа",           group=grp_entry)
+show_sl_tp  = input.bool(true, "Показывать SL / TP линии",          group=grp_entry)
+rr_ratio    = input.float(2.0, "Целевой R:R (для расчёта TP)",       minval=1.0, maxval=10.0, step=0.5, group=grp_entry)
+
+grp_col = "Цвета"
+supply_col  = input.color(color.new(#D85A30, 80), "Supply зона",    group=grp_col)
+supply_brd  = input.color(color.new(#D85A30, 20), "Supply граница", group=grp_col)
+demand_col  = input.color(color.new(#1D9E75, 80), "Demand зона",    group=grp_col)
+demand_brd  = input.color(color.new(#1D9E75, 20), "Demand граница", group=grp_col)
+a_col       = input.color(color.new(#D85A30,  0), "Точка A",        group=grp_col)
+v_col       = input.color(color.new(#1D9E75,  0), "Точка V",        group=grp_col)
+entry_col   = input.color(color.new(#378ADD,  0), "Сигнал входа",   group=grp_col)
+
+grp_alert = "Алерты"
+alert_a     = input.bool(true, "Алерт: точка A сформирована",       group=grp_alert)
+alert_v     = input.bool(true, "Алерт: точка V — сигнал входа",     group=grp_alert)
+alert_break = input.bool(true, "Алерт: зона пробита",               group=grp_alert)
+
+// ─────────────────────────────────────────────
+// БАЗОВЫЕ РАСЧЁТЫ
+// ─────────────────────────────────────────────
+atr_val = ta.atr(14)
+zone_w  = atr_val * atr_mult
+
+ph = ta.pivothigh(high, swing_len, swing_len)
+pl = ta.pivotlow (low,  swing_len, swing_len)
+
+offset = swing_len
+
+// ─────────────────────────────────────────────
+// УПРАВЛЕНИЕ ЗОНАМИ
+// ─────────────────────────────────────────────
+var supply_boxes  = array.new_box()
+var demand_boxes  = array.new_box()
+var supply_active = array.new_bool()
+var demand_active = array.new_bool()
+
+prune_zones(boxes, active, max_n) =>
+    while array.size(boxes) > max_n
+        b = array.shift(boxes)
+        if not show_broken
+            box.delete(b)
+        array.shift(active)
+
+add_supply(top, bot) =>
+    b = box.new(bar_index - offset, top, bar_index + 500, bot,
+         border_color=supply_brd, border_width=1,
+         bgcolor=supply_col, extend=extend.right)
+    array.push(supply_boxes, b)
+    array.push(supply_active, true)
+    prune_zones(supply_boxes, supply_active, max_zones)
+
+add_demand(top, bot) =>
+    b = box.new(bar_index - offset, top, bar_index + 500, bot,
+         border_color=demand_brd, border_width=1,
+         bgcolor=demand_col, extend=extend.right)
+    array.push(demand_boxes, b)
+    array.push(demand_active, true)
+    prune_zones(demand_boxes, demand_active, max_zones)
+
+if not na(ph)
+    add_supply(ph + zone_w, ph - zone_w)
+    if show_A and alert_a
+        alert('{"signal":"POINT_A","type":"Supply","price":' + str.tostring(ph, "#.00") + ',"time":"' + str.tostring(year) + '-' + str.tostring(month, "00") + '-' + str.tostring(dayofmonth, "00") + ' ' + str.tostring(hour, "00") + ':' + str.tostring(minute, "00") + '","tf":"' + timeframe.period + '","sym":"' + syminfo.tickerid + '"}', alert.freq_once_per_bar)
+
+if not na(pl)
+    add_demand(pl + zone_w, pl - zone_w)
+
+// ─────────────────────────────────────────────
+// ПРОВЕРКА ПРОБОЯ ЗОН
+// ─────────────────────────────────────────────
+check_breaks() =>
+    s_size = array.size(supply_boxes)
+    if s_size > 0
+        for i = 0 to s_size - 1
+            if array.get(supply_active, i)
+                b   = array.get(supply_boxes, i)
+                top = box.get_top(b)
+                if close > top
+                    array.set(supply_active, i, false)
+                    if not show_broken
+                        box.set_bgcolor(b, color.new(color.gray, 90))
+                        box.set_border_color(b, color.new(color.gray, 60))
+                    if alert_break
+                        alert('{"signal":"ZONE_BREAK","type":"Supply","price":' + str.tostring(close, "#.00") + ',"time":"' + str.tostring(year) + '-' + str.tostring(month, "00") + '-' + str.tostring(dayofmonth, "00") + ' ' + str.tostring(hour, "00") + ':' + str.tostring(minute, "00") + '","tf":"' + timeframe.period + '","sym":"' + syminfo.tickerid + '"}', alert.freq_once_per_bar)
+    d_size = array.size(demand_boxes)
+    if d_size > 0
+        for i = 0 to d_size - 1
+            if array.get(demand_active, i)
+                b   = array.get(demand_boxes, i)
+                bot = box.get_bottom(b)
+                if close < bot
+                    array.set(demand_active, i, false)
+                    if not show_broken
+                        box.set_bgcolor(b, color.new(color.gray, 90))
+                        box.set_border_color(b, color.new(color.gray, 60))
+                    if alert_break
+                        alert('{"signal":"ZONE_BREAK","type":"Demand","price":' + str.tostring(close, "#.00") + ',"time":"' + str.tostring(year) + '-' + str.tostring(month, "00") + '-' + str.tostring(dayofmonth, "00") + ' ' + str.tostring(hour, "00") + ':' + str.tostring(minute, "00") + '","tf":"' + timeframe.period + '","sym":"' + syminfo.tickerid + '"}', alert.freq_once_per_bar)
+
+check_breaks()
+
+// ─────────────────────────────────────────────
+// МЕТКИ ТОЧЕК A и V
+// ─────────────────────────────────────────────
+point_A_supply = false
+if not na(ph) and show_A and array.size(supply_boxes) > 0
+    for i = 0 to array.size(supply_boxes) - 1
+        if array.get(supply_active, i)
+            b   = array.get(supply_boxes, i)
+            top = box.get_top(b)
+            bot = box.get_bottom(b)
+            if ph >= bot and ph <= top + zone_w
+                label.new(bar_index - offset, ph + zone_w * 0.3,
+                     text="A", style=label.style_label_down,
+                     color=a_col, textcolor=color.white, size=size.small)
+                point_A_supply := true
+                break
+
+point_V_demand = false
+if not na(pl) and show_V and array.size(demand_boxes) > 0
+    for i = 0 to array.size(demand_boxes) - 1
+        if array.get(demand_active, i)
+            b   = array.get(demand_boxes, i)
+            top = box.get_top(b)
+            bot = box.get_bottom(b)
+            if pl >= bot - zone_w and pl <= top
+                confirmed = true
+                if bar_index >= v_confirm_bars
+                    for c = 1 to v_confirm_bars
+                        if close[c] < close[c + 1]
+                            confirmed := false
+                if confirmed
+                    label.new(bar_index - offset, pl - zone_w * 0.3,
+                         text="V", style=label.style_label_up,
+                         color=v_col, textcolor=color.white, size=size.small)
+                    point_V_demand := true
+                    break
+
+// ─────────────────────────────────────────────
+// СИГНАЛ ВХОДА + WEBHOOK ALERTS ДЛЯ TELEGRAM
+// ─────────────────────────────────────────────
+long_signal  = point_V_demand and close > open
+short_signal = point_A_supply and close < open
+
+if long_signal and show_entry
+    sl_price = low - zone_w * 1.2
+    risk     = close - sl_price
+    tp_price = close + risk * rr_ratio
+
+    label.new(bar_index, low,
+         text="▲ ВХОД\n" + str.tostring(close, "#.00"),
+         style=label.style_label_up,
+         color=entry_col, textcolor=color.white, size=size.small,
+         yloc=yloc.belowbar)
+
+    if show_sl_tp
+        label.new(bar_index, sl_price,
+             text="SL\n" + str.tostring(sl_price, "#.00"),
+             style=label.style_label_upper_right,
+             color=color.new(#D85A30, 10), textcolor=color.white,
+             size=size.tiny)
+        line.new(bar_index, sl_price, bar_index, tp_price,
+             color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index, tp_price,
+             text="TP  R:R " + str.tostring(rr_ratio, "#.#") + "\n" + str.tostring(tp_price, "#.00"),
+             style=label.style_label_lower_right,
+             color=color.new(#1D9E75, 10), textcolor=color.white,
+             size=size.tiny)
+
+    // ══════ WEBHOOK ALERT — LONG ══════
+    if alert_v
+        alert('{"signal":"LONG","price":' + str.tostring(close, "#.00") + ',"sl":' + str.tostring(sl_price, "#.00") + ',"tp":' + str.tostring(tp_price, "#.00") + ',"rr":' + str.tostring(rr_ratio, "#.#") + ',"time":"' + str.tostring(year) + '-' + str.tostring(month, "00") + '-' + str.tostring(dayofmonth, "00") + ' ' + str.tostring(hour, "00") + ':' + str.tostring(minute, "00") + '","tf":"' + timeframe.period + '","sym":"' + syminfo.tickerid + '"}', alert.freq_once_per_bar)
+
+if short_signal and show_entry and not na(ph)
+    sl_price_s = ph + zone_w * 1.5
+    risk_s     = sl_price_s - close
+    tp_price_s = close - risk_s * rr_ratio
+
+    label.new(bar_index - offset, high,
+         text="▼ SHORT\n" + str.tostring(close, "#.00"),
+         style=label.style_label_down,
+         color=a_col, textcolor=color.white, size=size.small,
+         yloc=yloc.abovebar)
+
+    if show_sl_tp
+        label.new(bar_index - offset, sl_price_s,
+             text="SL\n" + str.tostring(sl_price_s, "#.00"),
+             style=label.style_label_lower_right,
+             color=color.new(#D85A30, 10), textcolor=color.white,
+             size=size.tiny)
+        line.new(bar_index - offset, sl_price_s, bar_index - offset, tp_price_s,
+             color=color.new(color.gray, 60), width=1, style=line.style_dotted)
+        label.new(bar_index - offset, tp_price_s,
+             text="TP  R:R " + str.tostring(rr_ratio, "#.#") + "\n" + str.tostring(tp_price_s, "#.00"),
+             style=label.style_label_upper_right,
+             color=color.new(#1D9E75, 10), textcolor=color.white,
+             size=size.tiny)
+
+    // ══════ WEBHOOK ALERT — SHORT ══════
+    if alert_a
+        alert('{"signal":"SHORT","price":' + str.tostring(close, "#.00") + ',"sl":' + str.tostring(sl_price_s, "#.00") + ',"tp":' + str.tostring(tp_price_s, "#.00") + ',"rr":' + str.tostring(rr_ratio, "#.#") + ',"time":"' + str.tostring(year) + '-' + str.tostring(month, "00") + '-' + str.tostring(dayofmonth, "00") + ' ' + str.tostring(hour, "00") + ':' + str.tostring(minute, "00") + '","tf":"' + timeframe.period + '","sym":"' + syminfo.tickerid + '"}', alert.freq_once_per_bar)
+
+// ─────────────────────────────────────────────
+// ДАШБОРД
+// ─────────────────────────────────────────────
+var table dash = table.new(position.top_right, 2, 6,
+     bgcolor=color.new(color.black, 80), border_width=0,
+     frame_color=color.new(color.gray, 60), frame_width=1)
+
+var int active_s = 0
+var int active_d = 0
+active_s := 0
+active_d := 0
+if array.size(supply_active) > 0
+    for i = 0 to array.size(supply_active) - 1
+        if array.get(supply_active, i)
+            active_s += 1
+if array.size(demand_active) > 0
+    for i = 0 to array.size(demand_active) - 1
+        if array.get(demand_active, i)
+            active_d += 1
+
+signal_txt = long_signal ? "LONG ▲" : short_signal ? "SHORT ▼" : "—"
+signal_col = long_signal ? color.new(#1D9E75, 0) : short_signal ? color.new(#D85A30, 0) : color.new(color.gray, 0)
+
+if barstate.islast
+    table.cell(dash, 0, 0, "V-Zones A/V",             text_color=color.white,              text_size=size.normal, bgcolor=color.new(color.gray, 70))
+    table.cell(dash, 1, 0, "XAUUSD",                  text_color=color.yellow,             text_size=size.normal, bgcolor=color.new(color.gray, 70))
+    table.cell(dash, 0, 1, "Supply зон:",              text_color=color.new(#D85A30, 0),   text_size=size.small)
+    table.cell(dash, 1, 1, str.tostring(active_s),     text_color=color.new(#D85A30, 0),   text_size=size.small)
+    table.cell(dash, 0, 2, "Demand зон:",              text_color=color.new(#1D9E75, 0),   text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(active_d),     text_color=color.new(#1D9E75, 0),   text_size=size.small)
+    table.cell(dash, 0, 3, "Свинг-длина:",             text_color=color.gray,               text_size=size.small)
+    table.cell(dash, 1, 3, str.tostring(swing_len),    text_color=color.gray,               text_size=size.small)
+    table.cell(dash, 0, 4, "ATR(14):",                 text_color=color.gray,               text_size=size.small)
+    table.cell(dash, 1, 4, str.tostring(atr_val, "#.0"), text_color=color.gray,             text_size=size.small)
+    table.cell(dash, 0, 5, "Сигнал:",                  text_color=color.gray,               text_size=size.small)
+    table.cell(dash, 1, 5, signal_txt,                  text_color=signal_col,              text_size=size.small)
+
+// ─────────────────────────────────────────────
+// ФОНОВАЯ ПОДСВЕТКА
+// ─────────────────────────────────────────────
+in_supply = false
+in_demand = false
+
+if array.size(supply_boxes) > 0
+    for i = 0 to array.size(supply_boxes) - 1
+        if array.get(supply_active, i)
+            b = array.get(supply_boxes, i)
+            if high >= box.get_bottom(b) and low <= box.get_top(b)
+                in_supply := true
+
+if array.size(demand_boxes) > 0
+    for i = 0 to array.size(demand_boxes) - 1
+        if array.get(demand_active, i)
+            b = array.get(demand_boxes, i)
+            if high >= box.get_bottom(b) and low <= box.get_top(b)
+                in_demand := true
+
+bgcolor(in_supply ? color.new(#D85A30, 92) : na, title="Фон: цена в Supply")
+bgcolor(in_demand ? color.new(#1D9E75, 92) : na, title="Фон: цена в Demand")
+
+// ─────────────────────────────────────────────
+// ALERTCONDITIONS
+// ─────────────────────────────────────────────
+alertcondition(long_signal,  "V-Zones: LONG сигнал",  "V-Zones: Точка V подтверждена — ВХОД LONG")
+alertcondition(short_signal, "V-Zones: SHORT сигнал", "V-Zones: Точка A подтверждена — ВХОД SHORT")
+alertcondition(in_supply,    "V-Zones: цена в Supply", "V-Zones: Цена вошла в Supply зону")
+alertcondition(in_demand,    "V-Zones: цена в Demand", "V-Zones: Цена вошла в Demand зону")
