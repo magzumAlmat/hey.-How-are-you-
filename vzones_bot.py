@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
+import macro_context
 import tv_feed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,6 +74,7 @@ ALERT_SHORT = True    # SHORT сигнал
 ALERT_BREAK = False   # Зона пробита
 SCAN_SEC      = 60    # Скан графика каждые N секунд
 HEARTBEAT_MIN = 10    # Сообщение "бот работает" каждые N минут
+MACRO_ENABLED = True  # Проверка DXY, US10Y, CPI/NFP, ФРС, геополитики и новостей
 
 USER_TZ  = ZoneInfo("Asia/Yekaterinburg")   # UTC+5
 NY_TZ    = ZoneInfo("America/New_York")     # время расписания OANDA
@@ -199,13 +201,14 @@ class Signal:
     zone: str = ""
 
 
-def format_signal(s: Signal, test: bool = False) -> str:
+def format_signal(s: Signal, macro: Optional[macro_context.MacroContext] = None,
+                  test: bool = False) -> str:
     tf = f"{TF_MINUTES}m" if TF_MINUTES < 60 else f"{TF_MINUTES // 60}H"
     head = "🧪 <b>ТЕСТ</b> (последний сигнал из истории)\n\n" if test else ""
     when = fmt_user(s.bar_time) + " (UTC+5)"
     if s.kind in ("LONG", "SHORT"):
         long = s.kind == "LONG"
-        return head + (
+        msg = head + (
             f"{'🟢' if long else '🔴'} <b>V-Zones: {'LONG ▲' if long else 'SHORT ▼'}</b>\n\n"
             f"📌 XAUUSD · OANDA · {tf}\n"
             f"🕐 {when}\n\n"
@@ -215,6 +218,9 @@ def format_signal(s: Signal, test: bool = False) -> str:
             f"📐 <b>R:R</b> 1:{RR_RATIO:g}\n\n"
             f"<i>{'Точка V у Demand зоны' if long else 'Точка A у Supply зоны'}</i>"
         )
+        if macro is not None:
+            msg += "\n\n" + macro_context.format_macro_for_signal(s.kind, macro)
+        return msg
     if s.kind == "POINT_A":
         return head + (f"🔺 <b>V-Zones: точка A (Supply)</b>\n\n"
                        f"📌 XAUUSD · OANDA · {tf}\n🕐 {when}\n📍 Пик: {s.price:.2f}")
@@ -364,13 +370,17 @@ def run_test():
               + (f"  SL {s.sl:.2f} TP {s.tp:.2f}" if s.sl else ""))
     entries = [s for s in sigs if s.kind in ("LONG", "SHORT")]
     if entries:
-        ok = send_telegram(format_signal(entries[-1], test=True))
+        ctx = macro_context.MacroMonitor().get_context(force_quotes=True) if MACRO_ENABLED else None
+        msg = format_signal(entries[-1], macro=ctx, test=True)
+        print("\n--- Сообщение ---\n" + msg)
+        ok = send_telegram(msg)
         print("\nTelegram:", "OK" if ok else "ОШИБКА")
 
 
 def main():
     log.info(f"V-Zones Bot | {SYMBOL} {TF_MINUTES}m | скан каждые {SCAN_SEC}с | chat {CHAT_ID}")
     eng = VZonesEngine()
+    macro = macro_context.MacroMonitor() if MACRO_ENABLED else None
     initialized = False
     started = datetime.now(timezone.utc)
     scans = 0
@@ -404,7 +414,8 @@ def main():
                     age = (datetime.now(timezone.utc) - pending_signal.bar_time).total_seconds()
                     if age <= TF_MINUTES * 60 * 2:
                         log.info(f"📤 {pending_signal.kind} {pending_signal.price:.2f}")
-                        if send_telegram(format_signal(pending_signal)):
+                        ctx = macro.get_context(force_quotes=True) if macro else None
+                        if send_telegram(format_signal(pending_signal, macro=ctx)):
                             last_sent = pending_signal
                             pending_signal = None
                     else:
@@ -433,6 +444,10 @@ def main():
             if last_price is not None:
                 txt += f"💰 Цена: {last_price:.2f}\n"
             txt += f"🔍 Сканов: {scans} · 🗂 Зоны: {eng.status()}\n"
+            if macro:
+                macro_line = macro_context.format_macro_compact(macro.get_context())
+                if macro_line:
+                    txt += macro_line + "\n"
             txt += (f"📍 Последний сигнал: {last_sent.kind} {last_sent.price:.2f} ({fmt_user(last_sent.bar_time)})"
                     if last_sent else "📍 Новых сигналов пока нет")
             if errors:
