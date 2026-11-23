@@ -3,7 +3,7 @@
 V-Zones (Supply & Demand A/V Method) — автономный Telegram-бот и Pine Script v6 индикатор для `OANDA:XAUUSD`.
 
 ## Файлы
-- `vzones_bot.py` — автономный бот: получает свечи `OANDA:XAUUSD`, строит зоны Supply/Demand (`SWING_LEN = 6`, `TF = 5m`, `RR = 1:1`), сканирует каждую минуту и отправляет крайние `LONG`/`SHORT` сигналы + 10-минутный отчёт о работе в Telegram.
+- `vzones_bot.py` — автономный бот: получает свечи `OANDA:XAUUSD`, строит зоны Supply/Demand (`SWING_LEN = 6`, `TF = 5m`, `RR = 1:1`), сканирует каждую минуту и отправляет крайние `LONG`/`SHORT` сигналы + 30-минутный отчёт о работе в Telegram.
 - `macro_context.py` — проверка 6 макро-факторов перед сигналом: `DXY`, `US10Y`, отчёты CPI/NFP, события ФРС, геополитика/новости (RSS) и окно волатильности (ForexFactory).
 - `tv_feed.py` — клиент котировок TradingView (без логина).
 - `vzones_av.pine` — индикатор TradingView (Pine Script v6).

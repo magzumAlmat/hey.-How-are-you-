@@ -73,7 +73,7 @@ ALERT_V     = True    # LONG сигнал
 ALERT_SHORT = True    # SHORT сигнал
 ALERT_BREAK = False   # Зона пробита
 SCAN_SEC      = 60    # Скан графика каждые N секунд
-HEARTBEAT_MIN = 10    # Сообщение "бот работает" каждые N минут
+HEARTBEAT_MIN = 30    # Сообщение "бот работает" каждые N минут
 MACRO_ENABLED = True  # Проверка DXY, US10Y, CPI/NFP, ФРС, геополитики и новостей
 
 USER_TZ  = ZoneInfo("Asia/Yekaterinburg")   # UTC+5
